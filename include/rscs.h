@@ -84,7 +84,6 @@ void regfile_dump_registers();
 #define LOGIC_HIGH 1
 #define LOGIC_LOW  0
 
-
 #define GET_PC() \
   read_register(REGISTER_PC)
 
@@ -111,8 +110,28 @@ void regfile_dump_registers();
 #define MMIO_SYSTEM_MEMORY_START MMIO_UART_2 + 1
 #define MMIO_SYSTEM_MEMORY_END MMIO_SYSTEM_MEMORY_START + MMIO_SYSTEM_MEMORY_SIZE
 
+enum {
+  VIRT_RESERVED,
+  VIRT_SPI0,
+  VIRT_UART0,
+  VIRT_UART1,
+  VIRT_UART2,
+  VIRT_UART3,
+  VIRT_DRAM,
+  VIRT_UNKNOWN,
+};
+
+struct MmioMapEntry {
+  uint32_t base;
+  uint32_t size;
+};
+
+/* TODO: implement memory map like in https://github.com/qemu/qemu/blob/master/hw/riscv/virt.c.
+ * To find appropriate device, you should iterate through this map and check if address
+ * falls in interval between base address and base address + size.
+ * This map should have one more field: pointer to devices read and write functions.
+ */
 /* System memory */
-static inline bool check_and_convert_address(uint32_t* address);
 
 void system_memory_write(uint32_t address, uint32_t data, uint8_t size);
 uint32_t system_memory_read(uint32_t address, uint8_t size);
@@ -130,6 +149,10 @@ uint32_t uart_read(uint32_t address, uint8_t size);
 void spi_write(uint32_t address, uint32_t data, uint8_t size);
 uint32_t spi_read(uint32_t address, uint8_t size);
 
+void invalid_address_write_handler(uint32_t address, uint32_t data,
+                                   uint8_t size);
+uint32_t invalid_address_read_handler(uint32_t address, uint32_t size);
+
 /* Memory management unit */
 enum {
   MMIO_DEVICE_SYS_MEMORY,
@@ -139,6 +162,7 @@ enum {
   MMIO_DEVICE_SPI
 };
 
+bool check_alignment(uint32_t address, uint8_t size);
 uint8_t mmu_translate_address(uint32_t address, uint8_t size);
 
 void mmu_write(uint32_t address, uint32_t data, uint8_t size);

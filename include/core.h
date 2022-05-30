@@ -28,8 +28,7 @@ bool fsm_cycle_state();
 
 void decode();
 union Decoder {
-uint32_t instruction;
-
+  uint32_t instruction;
   struct {
     uint32_t __block : 3;     // 0
     uint32_t __scheme : 2;    // 3

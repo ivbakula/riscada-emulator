@@ -102,53 +102,73 @@ void regfile_write(uint8_t reg, uint32_t data)
   }
 }
 
+/* Memory management unit */
+static const struct MmioMapEntry mmio_map[] = {
+  [VIRT_RESERVED] = {0x000, SIZE_BYTE},
+  [VIRT_SPI0] = {0x001, MMIO_SPI_BLOCK_SIZE-1},
+  [VIRT_UART0] = {513, SIZE_BYTE},
+  [VIRT_UART1] = {514, SIZE_BYTE},
+  [VIRT_UART2] = {515, SIZE_BYTE},
+  [VIRT_DRAM] = {516, MMIO_SYSTEM_MEMORY_SIZE}
+};
+
+bool check_alignment(uint32_t address, uint8_t size)
+{
+  uint8_t first_memory_cell = address % MMIO_SYSTEM_MEMORY_ALIGN;
+  uint8_t last_memory_cell  = first_memory_cell + size - 1;
+  bool retval = false;
+
+  
+  if (last_memory_cell < 4)
+    /* memory is indeed 4 byte aligned */
+    retval = true;
+
+  return retval;
+}
+
 uint8_t mmu_translate_address(uint32_t address, uint8_t size)
 {
-  if (!address) {
-    fprintf(stderr, "nullpointer exception\n");
-    return -1;
+  /* Check alignememnt */
+  for (int i = 0; i < VIRT_UNKNOWN; i++) {
+    uint32_t base = mmio_map[i].base;
+    uint32_t end = base + mmio_map[i].size;
+    if (address >= base  && address < end)
+      return i;
   }
 
-  /* Check alignement */
-  uint8_t i0 = address % MMIO_SYSTEM_MEMORY_ALIGN;
-  uint8_t i1 = i0 + size - 1;
-  if (i1 > 3) {
-    fprintf(stderr, "misaligned write\n");
-    return -1;
-  }
-  
-  if (address >= MMIO_SPI_START && address < MMIO_SPI_END)
-    return MMIO_DEVICE_SPI;
-
-  if (address == 513) {
-    return MMIO_DEVICE_UART;
-  }
-
-        
-  if (address >= MMIO_SYSTEM_MEMORY_START && address < MMIO_SYSTEM_MEMORY_END)
-    return MMIO_DEVICE_SYS_MEMORY;
-
-  fprintf(stderr, "sigbus.");
-  return -1;
+  return VIRT_UNKNOWN;
 }
 
 void mmu_write(uint32_t address, uint32_t data, uint8_t size)
 {
   uint8_t device = mmu_translate_address(address, size);
-
+  uint32_t converted_address = address - mmio_map[device].base;
   switch (device) {
-    case MMIO_DEVICE_SYS_MEMORY:
-      system_memory_write(address, data, size);
+    case VIRT_RESERVED:
+      /* raise null pointer exception */
+      fprintf(stderr, "Error in %s. Null pointer exception\n", __FUNCTION__);
+      regfile_write(REGISTER_ERROR, true);
       break;
       
-    case MMIO_DEVICE_UART:
-      uart_write(address, data, size);
+    case VIRT_SPI0:
+      spi_write(converted_address, data, size);
       break;
       
-    case MMIO_DEVICE_SPI:
-      spi_write(address, data, size);
+    case VIRT_UART0:
+    case VIRT_UART1:
+    case VIRT_UART2:
+    case VIRT_UART3:
+      uart_write(converted_address, data, size);
       break;
       
+    case VIRT_DRAM:
+      address = address - mmio_map[VIRT_DRAM].base;
+      system_memory_write(converted_address, data, size);
+      break;
+      
+    case VIRT_UNKNOWN:
+      /* throw sigbus exception */
+      fprintf(stderr, "Bus exception!");
     default:
       break;
   }
@@ -157,21 +177,40 @@ void mmu_write(uint32_t address, uint32_t data, uint8_t size)
 uint32_t mmu_read(uint32_t address, uint8_t size)
 {
   uint8_t device = mmu_translate_address(address, size);
-
+  uint32_t converted_address = address - mmio_map[device].base;
+  uint32_t data = 0;
+  
   switch (device) {
-    case MMIO_DEVICE_SYS_MEMORY:
-      return system_memory_read(address, size);
+    case VIRT_RESERVED:
+      /* raise null pointer exception */
+      fprintf(stderr, "Error in %s. Null pointer exception\n", __FUNCTION__);
+      regfile_write(REGISTER_ERROR, true);
+      break;
       
-    case MMIO_DEVICE_UART:
-      return system_memory_read(address, size);
+    case VIRT_SPI0:
+      data = spi_read(converted_address, size);
+      break;
       
-    case MMIO_DEVICE_SPI:
-      return system_memory_read(address, size);
+    case VIRT_UART0:
+    case VIRT_UART1:
+    case VIRT_UART2:
+    case VIRT_UART3:
+      data = uart_read(address, size);
+      break;
       
+    case VIRT_DRAM:
+      address = address - mmio_map[VIRT_DRAM].base;
+      data = system_memory_read(converted_address, size);
+      break;
+      
+    case VIRT_UNKNOWN:
+      /* throw sigbus exception */
+      fprintf(stderr, "Error in %s. Bus exception\n", __FUNCTION__);
+      regfile_write(REGISTER_ERROR, true);
     default:
       break;
   }
-  return -1;
+  return data;
 }
 
 void mmu_init()
@@ -179,24 +218,8 @@ void mmu_init()
   system_memory_init();
 }
 
-static inline bool check_and_convert_address(uint32_t* address)
-{
-  int32_t offset = MMIO_SYSTEM_MEMORY_START;
-  *address = *address - offset;
-
-  if (*address > MMIO_SYSTEM_MEMORY_SIZE) {
-    fprintf(stderr, "Address out of bounds: %d\n", *address);
-    regfile_write(REGISTER_ERROR, true);
-    return false;
-  }
-  return true;
-}
-
 uint32_t system_memory_read(uint32_t address, uint8_t size)
 {
-  if (!check_and_convert_address(&address))
-    return -1;
-  
   uint8_t column = address % 4;
   uint16_t row = address / 4;
 
@@ -216,9 +239,6 @@ uint32_t system_memory_read(uint32_t address, uint8_t size)
 
 void system_memory_write(uint32_t address, uint32_t data, uint8_t size)
 {
-  if (!check_and_convert_address(&address))
-    return;
-  
   uint8_t column = address % 4;
   uint16_t row = address / 4;
 
